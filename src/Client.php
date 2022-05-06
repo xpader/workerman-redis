@@ -13,6 +13,7 @@
  */
 namespace Workerman\Redis;
 
+use Amp\DeferredFuture;
 use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Timer;
 
@@ -20,171 +21,176 @@ use Workerman\Timer;
  * Class Client
  * @package Workerman\Redis
  *
+ * @method bool select($db)
+ * @method bool auth($password)
+ *
  * Strings methods
- * @method static int append($key, $value, $cb = null)
- * @method static int bitCount($key, $cb = null)
- * @method static int decrBy($key, $value, $cb = null)
- * @method static string|bool get($key, $cb = null)
- * @method static int getBit($key, $offset, $cb = null)
- * @method static string getRange($key, $start, $end, $cb = null)
- * @method static string getSet($key, $value, $cb = null)
- * @method static int incrBy($key, $value, $cb = null)
- * @method static float incrByFloat($key, $value, $cb = null)
- * @method static array mGet(array $keys, $cb = null)
- * @method static array getMultiple(array $keys, $cb = null)
- * @method static bool setBit($key, $offset, $value, $cb = null)
- * @method static bool setEx($key, $ttl, $value, $cb = null)
- * @method static bool pSetEx($key, $ttl, $value, $cb = null)
- * @method static bool setNx($key, $value, $cb = null)
- * @method static string setRange($key, $offset, $value, $cb = null)
- * @method static int strLen($key, $cb = null)
+ * @method int append($key, $value)
+ * @method int bitCount($key)
+ * @method int decr($key)
+ * @method int decrBy($key, $value)
+ * @method string|bool get($key)
+ * @method int getBit($key, $offset)
+ * @method string getRange($key, $start, $end)
+ * @method string getSet($key, $value)
+ * @method int incr($key)
+ * @method int incrBy($key, $value)
+ * @method float incrByFloat($key, $value)
+ * @method array mGet(array $keys)
+ * @method array getMultiple(array $keys)
+ * @method bool setBit($key, $offset, $value)
+ * @method bool setEx($key, $ttl, $value)
+ * @method bool pSetEx($key, $ttl, $value)
+ * @method bool setNx($key, $value)
+ * @method string setRange($key, $offset, $value)
+ * @method int strLen($key)
  * Keys methods
- * @method static int del(...$keys, $cb = null)
- * @method static int unlink(...$keys, $cb = null)
- * @method static false|string dump($key, $cb = null)
- * @method static int exists(...$keys, $cb = null)
- * @method static bool expire($key, $ttl, $cb = null)
- * @method static bool pexpire($key, $ttl, $cb = null)
- * @method static bool expireAt($key, $timestamp, $cb = null)
- * @method static bool pexpireAt($key, $timestamp, $cb = null)
- * @method static array keys($pattern, $cb = null)
- * @method static bool|array scan($it, $cb = null)
- * @method static void migrate($host, $port, $keys, $dbIndex, $timeout, $copy = false, $replace = false, $cb = null)
- * @method static bool move($key, $dbIndex, $cb = null)
- * @method static string|int|bool object($information, $key, $cb = null)
- * @method static bool persist($key, $cb = null)
- * @method static string randomKey(, $cb = null)
- * @method static bool rename($srcKey, $dstKey, $cb = null)
- * @method static bool renameNx($srcKey, $dstKey, $cb = null)
- * @method static string type($key, $cb = null)
- * @method static int ttl($key, $cb = null)
- * @method static int pttl($key, $cb = null)
- * @method static void restore($key, $ttl, $value, $cb = null)
+ * @method int del(...$keys)
+ * @method int unlink(...$keys)
+ * @method false|string dump($key)
+ * @method int exists(...$keys)
+ * @method bool expire($key, $ttl)
+ * @method bool pexpire($key, $ttl)
+ * @method bool expireAt($key, $timestamp)
+ * @method bool pexpireAt($key, $timestamp)
+ * @method array keys($pattern)
+ * @method bool|array scan($it)
+ * @method void migrate($host, $port, $keys, $dbIndex, $timeout, $copy = false, $replace = false)
+ * @method bool move($key, $dbIndex)
+ * @method string|int|bool object($information, $key)
+ * @method bool persist($key)
+ * @method string randomKey()
+ * @method bool rename($srcKey, $dstKey)
+ * @method bool renameNx($srcKey, $dstKey)
+ * @method string type($key)
+ * @method int ttl($key)
+ * @method int pttl($key)
+ * @method void restore($key, $ttl, $value)
  * Hashes methods
- * @method static false|int hSet($key, $hashKey, $value, $cb = null)
- * @method static bool hSetNx($key, $hashKey, $value, $cb = null)
- * @method static false|string hGet($key, $hashKey, $cb = null)
- * @method static false|int hLen($key, $cb = null)
- * @method static false|int hDel($key, ...$hashKeys, $cb = null)
- * @method static array hKeys($key, $cb = null)
- * @method static array hVals($key, $cb = null)
- * @method static bool hExists($key, $hashKey, $cb = null)
- * @method static int hIncrBy($key, $hashKey, $value, $cb = null)
- * @method static float hIncrByFloat($key, $hashKey, $value, $cb = null)
- * @method static array hScan($key, $iterator, $pattern = '', $count = 0, $cb = null)
- * @method static int hStrLen($key, $hashKey, $cb = null)
+ * @method false|int hSet($key, $hashKey, $value)
+ * @method bool hSetNx($key, $hashKey, $value)
+ * @method false|string hGet($key, $hashKey)
+ * @method false|int hLen($key)
+ * @method false|int hDel($key, ...$hashKeys)
+ * @method array hKeys($key)
+ * @method array hVals($key)
+ * @method bool hExists($key, $hashKey)
+ * @method int hIncrBy($key, $hashKey, $value)
+ * @method float hIncrByFloat($key, $hashKey, $value)
+ * @method array hScan($key, $iterator, $pattern = '', $count = 0)
+ * @method int hStrLen($key, $hashKey)
  * Lists methods
- * @method static array blPop($keys, $timeout, $cb = null)
- * @method static array brPop($keys, $timeout, $cb = null)
- * @method static false|string bRPopLPush($srcKey, $dstKey, $timeout, $cb = null)
- * @method static false|string lIndex($key, $index, $cb = null)
- * @method static int lInsert($key, $position, $pivot, $value, $cb = null)
- * @method static false|string lPop($key, $cb = null)
- * @method static false|int lPush($key, ...$entries, $cb = null)
- * @method static false|int lPushx($key, $value, $cb = null)
- * @method static array lRange($key, $start, $end, $cb = null)
- * @method static false|int lRem($key, $value, $count, $cb = null)
- * @method static bool lSet($key, $index, $value, $cb = null)
- * @method static false|array lTrim($key, $start, $end, $cb = null)
- * @method static false|string rPop($key, $cb = null)
- * @method static false|string rPopLPush($srcKey, $dstKey, $cb = null)
- * @method static false|int rPush($key, ...$entries, $cb = null)
- * @method static false|int rPushX($key, $value, $cb = null)
- * @method static false|int lLen($key, $cb = null)
+ * @method array blPop($keys, $timeout)
+ * @method array brPop($keys, $timeout)
+ * @method false|string bRPopLPush($srcKey, $dstKey, $timeout)
+ * @method false|string lIndex($key, $index)
+ * @method int lInsert($key, $position, $pivot, $value)
+ * @method false|string lPop($key)
+ * @method false|int lPush($key, ...$entries)
+ * @method false|int lPushx($key, $value)
+ * @method array lRange($key, $start, $end)
+ * @method false|int lRem($key, $value, $count)
+ * @method bool lSet($key, $index, $value)
+ * @method false|array lTrim($key, $start, $end)
+ * @method false|string rPop($key)
+ * @method false|string rPopLPush($srcKey, $dstKey)
+ * @method false|int rPush($key, ...$entries)
+ * @method false|int rPushX($key, $value)
+ * @method false|int lLen($key)
  * Sets methods
- * @method static int sAdd($key, $value, $cb = null)
- * @method static int sCard($key, $cb = null)
- * @method static array sDiff($keys, $cb = null)
- * @method static false|int sDiffStore($dst, $keys, $cb = null)
- * @method static false|array sInter($keys, $cb = null)
- * @method static false|int sInterStore($dst, $keys, $cb = null)
- * @method static bool sIsMember($key, $member, $cb = null)
- * @method static array sMembers($key, $cb = null)
- * @method static bool sMove($src, $dst, $member, $cb = null)
- * @method static false|string|array sPop($key, $count = 0, $cb = null)
- * @method static false|string|array sRandMember($key, $count = 0, $cb = null)
- * @method static int sRem($key, ...$members, $cb = null)
- * @method static array sUnion(...$keys, $cb = null)
- * @method static false|int sUnionStore($dst, ...$keys, $cb = null)
- * @method static false|array sScan($key, $iterator, $pattern = '', $count = 0, $cb = null)
+ * @method int sAdd($key, $value)
+ * @method int sCard($key)
+ * @method array sDiff($keys)
+ * @method false|int sDiffStore($dst, $keys)
+ * @method false|array sInter($keys)
+ * @method false|int sInterStore($dst, $keys)
+ * @method bool sIsMember($key, $member)
+ * @method array sMembers($key)
+ * @method bool sMove($src, $dst, $member)
+ * @method false|string|array sPop($key, $count = 0)
+ * @method false|string|array sRandMember($key, $count = 0)
+ * @method int sRem($key, ...$members)
+ * @method array sUnion(...$keys)
+ * @method false|int sUnionStore($dst, ...$keys)
+ * @method false|array sScan($key, $iterator, $pattern = '', $count = 0)
  * Sorted sets methods
- * @method static array bzPopMin($keys, $timeout, $cb = null)
- * @method static array bzPopMax($keys, $timeout, $cb = null)
- * @method static int zAdd($key, $score, $value, $cb = null)
- * @method static int zCard($key, $cb = null)
- * @method static int zCount($key, $start, $end, $cb = null)
- * @method static double zIncrBy($key, $value, $member, $cb = null)
- * @method static int zinterstore($keyOutput, $arrayZSetKeys, $arrayWeights = [], $aggregateFunction = '', $cb = null)
- * @method static array zPopMin($key, $count, $cb = null)
- * @method static array zPopMax($key, $count, $cb = null)
- * @method static array zRange($key, $start, $end, $withScores = false, $cb = null)
- * @method static array zRangeByScore($key, $start, $end, $options = [], $cb = null)
- * @method static array zRevRangeByScore($key, $start, $end, $options = [], $cb = null)
- * @method static array zRangeByLex($key, $min, $max, $offset = 0, $limit = 0, $cb = null)
- * @method static int zRank($key, $member, $cb = null)
- * @method static int zRevRank($key, $member, $cb = null)
- * @method static int zRem($key, ...$members, $cb = null)
- * @method static int zRemRangeByRank($key, $start, $end, $cb = null)
- * @method static int zRemRangeByScore($key, $start, $end, $cb = null)
- * @method static array zRevRange($key, $start, $end, $withScores = false, $cb = null)
- * @method static double zScore($key, $member, $cb = null)
- * @method static int zunionstore($keyOutput, $arrayZSetKeys, $arrayWeights = [], $aggregateFunction = '', $cb = null)
- * @method static false|array zScan($key, $iterator, $pattern = '', $count = 0, $cb = null)
+ * @method array bzPopMin($keys, $timeout)
+ * @method array bzPopMax($keys, $timeout)
+ * @method int zAdd($key, $score, $value)
+ * @method int zCard($key)
+ * @method int zCount($key, $start, $end)
+ * @method double zIncrBy($key, $value, $member)
+ * @method int zinterstore($keyOutput, $arrayZSetKeys, $arrayWeights = [], $aggregateFunction = '')
+ * @method array zPopMin($key, $count)
+ * @method array zPopMax($key, $count)
+ * @method array zRange($key, $start, $end, $withScores = false)
+ * @method array zRangeByScore($key, $start, $end, $options = [])
+ * @method array zRevRangeByScore($key, $start, $end, $options = [])
+ * @method array zRangeByLex($key, $min, $max, $offset = 0, $limit = 0)
+ * @method int zRank($key, $member)
+ * @method int zRevRank($key, $member)
+ * @method int zRem($key, ...$members)
+ * @method int zRemRangeByRank($key, $start, $end)
+ * @method int zRemRangeByScore($key, $start, $end)
+ * @method array zRevRange($key, $start, $end, $withScores = false)
+ * @method double zScore($key, $member)
+ * @method int zunionstore($keyOutput, $arrayZSetKeys, $arrayWeights = [], $aggregateFunction = '')
+ * @method false|array zScan($key, $iterator, $pattern = '', $count = 0)
  * HyperLogLogs methods
- * @method static int pfAdd($key, $values, $cb = null)
- * @method static int pfCount($keys, $cb = null)
- * @method static bool pfMerge($dstKey, $srcKeys, $cb = null)
+ * @method int pfAdd($key, $values)
+ * @method int pfCount($keys)
+ * @method bool pfMerge($dstKey, $srcKeys)
  * Geocoding methods
- * @method static int geoAdd($key, $longitude, $latitude, $member, ...$items, $cb = null)
- * @method static array geoHash($key, ...$members, $cb = null)
- * @method static array geoPos($key, ...$members, $cb = null)
- * @method static double geoDist($key, $members, $unit = '', $cb = null)
- * @method static int|array geoRadius($key, $longitude, $latitude, $radius, $unit, $options = [], $cb = null)
- * @method static array geoRadiusByMember($key, $member, $radius, $units, $options = [], $cb = null)
+ * @method int geoAdd($key, $longitude, $latitude, $member, ...$items)
+ * @method array geoHash($key, ...$members)
+ * @method array geoPos($key, ...$members)
+ * @method double geoDist($key, $members, $unit = '')
+ * @method int|array geoRadius($key, $longitude, $latitude, $radius, $unit, $options = [])
+ * @method array geoRadiusByMember($key, $member, $radius, $units, $options = [])
  * Streams methods
- * @method static int xAck($stream, $group, $arrMessages, $cb = null)
- * @method static string xAdd($strKey, $strId, $arrMessage, $iMaxLen = 0, $booApproximate = false, $cb = null)
- * @method static array xClaim($strKey, $strGroup, $strConsumer, $minIdleTime, $arrIds, $arrOptions = [], $cb = null)
- * @method static int xDel($strKey, $arrIds, $cb = null)
- * @method static mixed xGroup($command, $strKey, $strGroup, $strMsgId, $booMKStream = null, $cb = null)
- * @method static mixed xInfo($command, $strStream, $strGroup = null, $cb = null)
- * @method static int xLen($stream, $cb = null)
- * @method static array xPending($strStream, $strGroup, $strStart = 0, $strEnd = 0, $iCount = 0, $strConsumer = null, $cb = null)
- * @method static array xRange($strStream, $strStart, $strEnd, $iCount = 0, $cb = null)
- * @method static array xRead($arrStreams, $iCount = 0, $iBlock = null, $cb = null)
- * @method static array xReadGroup($strGroup, $strConsumer, $arrStreams, $iCount = 0, $iBlock = null, $cb = null)
- * @method static array xRevRange($strStream, $strEnd, $strStart, $iCount = 0, $cb = null)
- * @method static int xTrim($strStream, $iMaxLen, $booApproximate = null, $cb = null)
+ * @method int xAck($stream, $group, $arrMessages)
+ * @method string xAdd($strKey, $strId, $arrMessage, $iMaxLen = 0, $booApproximate = false)
+ * @method array xClaim($strKey, $strGroup, $strConsumer, $minIdleTime, $arrIds, $arrOptions = [])
+ * @method int xDel($strKey, $arrIds)
+ * @method mixed xGroup($command, $strKey, $strGroup, $strMsgId, $booMKStream = null)
+ * @method mixed xInfo($command, $strStream, $strGroup = null)
+ * @method int xLen($stream)
+ * @method array xPending($strStream, $strGroup, $strStart = 0, $strEnd = 0, $iCount = 0, $strConsumer = null)
+ * @method array xRange($strStream, $strStart, $strEnd, $iCount = 0)
+ * @method array xRead($arrStreams, $iCount = 0, $iBlock = null)
+ * @method array xReadGroup($strGroup, $strConsumer, $arrStreams, $iCount = 0, $iBlock = null)
+ * @method array xRevRange($strStream, $strEnd, $strStart, $iCount = 0)
+ * @method int xTrim($strStream, $iMaxLen, $booApproximate = null)
  * Pub/sub methods
- * @method static mixed publish($channel, $message, $cb = null)
- * @method static mixed pubSub($keyword, $argument = null, $cb = null)
+ * @method mixed publish($channel, $message)
+ * @method mixed pubSub($keyword, $argument = null)
  * Generic methods
- * @method static mixed rawCommand(...$commandAndArgs, $cb = null)
+ * @method mixed rawCommand(...$commandAndArgs)
  * Transactions methods
- * @method static \Redis multi($cb = null)
- * @method static mixed exec($cb = null)
- * @method static mixed discard($cb = null)
- * @method static mixed watch($keys, $cb = null)
- * @method static mixed unwatch($keys, $cb = null)
+ * @method \Redis multi()
+ * @method mixed exec()
+ * @method mixed discard()
+ * @method mixed watch($keys)
+ * @method mixed unwatch($keys)
  * Scripting methods
- * @method static mixed eval($script, $args = [], $numKeys = 0, $cb = null)
- * @method static mixed evalSha($sha, $args = [], $numKeys = 0, $cb = null)
- * @method static mixed script($command, ...$scripts, $cb = null)
- * @method static mixed client(...$args, $cb = null)
- * @method static null|string getLastError($cb = null)
- * @method static bool clearLastError($cb = null)
- * @method static mixed _prefix($value, $cb = null)
- * @method static mixed _serialize($value, $cb = null)
- * @method static mixed _unserialize($value, $cb = null)
+ * @method mixed eval($script, $args = [], $numKeys = 0)
+ * @method mixed evalSha($sha, $args = [], $numKeys = 0)
+ * @method mixed script($command, ...$scripts)
+ * @method mixed client(...$args)
+ * @method null|string getLastError()
+ * @method bool clearLastError()
+ * @method mixed _prefix($value)
+ * @method mixed _serialize($value)
+ * @method mixed _unserialize($value)
  * Introspection methods
- * @method static bool isConnected($cb = null)
- * @method static mixed getHost($cb = null)
- * @method static mixed getPort($cb = null)
- * @method static false|int getDbNum($cb = null)
- * @method static false|double getTimeout($cb = null)
- * @method static mixed getReadTimeout($cb = null)
- * @method static mixed getPersistentID($cb = null)
- * @method static mixed getAuth($cb = null)
+ * @method bool isConnected()
+ * @method mixed getHost()
+ * @method mixed getPort()
+ * @method false|int getDbNum()
+ * @method false|double getTimeout()
+ * @method mixed getReadTimeout()
+ * @method mixed getPersistentID()
+ * @method mixed getAuth()
  */
 class Client
 {
@@ -526,111 +532,22 @@ class Client
     }
 
     /**
-     * select
-     *
-     * @param $db
-     * @param null $cb
-     */
-    public function select($db, $cb = null)
-    {
-        $format = function ($result) use ($db) {
-            $this->_db = $db;
-            return $result;
-        };
-        $cb = $cb ? $cb : function(){};
-        $this->_queue[] = [['SELECT', $db], time(), $cb, $format];
-        $this->process();
-    }
-
-    /**
-     * auth
-     *
-     * @param string|array $auth
-     * @param null $cb
-     */
-    public function auth($auth, $cb = null)
-    {
-        $format = function ($result) use ($auth) {
-            $this->_auth = $auth;
-            return $result;
-        };
-        $cb = $cb ? $cb : function(){};
-        $this->_queue[] = [['AUTH', $auth], time(), $cb, $format];
-        $this->process();
-    }
-
-    /**
      * set
      *
-     * @param $key
-     * @param $value
-     * @param null $cb
-     * @return null
+     * @param string $key
+     * @param string $value
+     * @param int $ex
+     * @param int $px
+     * @param string $opt NX or XX
+     * @return bool
      */
-    public function set($key, $value, $cb = null)
+    public function set($key, $value, $ex=null, $px=null, $opt=null)
     {
-        $args = func_get_args();
-        if ($cb !== null && !\is_callable($cb)) {
-            $timeout = $cb;
-            $cb = null;
-            if (\count($args) > 3) {
-                $cb = $args[3];
-            }
-            $this->_queue[] = [['SETEX', $key, $timeout, $value], time(), $cb];
-            $this->process();
-            return null;
-        }
-        $this->_queue[] = [['SET', $key, $value], time(), $cb];
-        $this->process();
-    }
-
-    /**
-     * incr
-     *
-     * @param $key
-     * @param null $cb
-     * @return null
-     */
-    public function incr($key, $cb = null)
-    {
-        $args = func_get_args();
-        if ($cb !== null && !\is_callable($cb)) {
-            $num = $cb;
-            $cb = null;
-            if (\count($args) > 2) {
-                $cb = $args[2];
-            }
-            $this->_queue[] = [['INCRBY', $key, $num], time(), $cb];
-            $this->process();
-            return null;
-        }
-        $this->_queue[] = [['INCR', $key], time(), $cb];
-        $this->process();
-    }
-
-
-    /**
-     * decr
-     *
-     * @param $key
-     * @param null $cb
-     * @return null
-     */
-    public function decr($key, $cb = null)
-    {
-        $args = func_get_args();
-        if ($cb !== null && !\is_callable($cb)) {
-            $num = $cb;
-            $cb = null;
-            if (\count($args) > 2) {
-                $cb = $args[2];
-            }
-            $this->_queue[] = [['DECRBY', $key, $num], time(), $cb];
-            $this->process();
-            return null;
-        }
-        $this->_queue[] = [['DECR', $key], time(), $cb];
-        $this->process();
+        $args = [$key, $value];
+        $ex !== null && array_push($args, 'EX', $ex);
+        $px !== null && array_push($args, 'PX', $px);
+        $opt && $args[] = $opt;
+        return $this->__call('SET', $args);
     }
 
     /**
@@ -640,9 +557,9 @@ class Client
      * @param $options
      * @param null $cb
      */
-    function sort($key, $options, $cb = null)
+    function sort($key, $options)
     {
-        $args = [];
+        $args = [$key];
         if (isset($options['sort'])) {
             $args[] = $options['sort'];
             unset($options['sort']);
@@ -658,80 +575,81 @@ class Client
                 $args[] = $sub_value;
             }
         }
-        \array_unshift($args, 'SORT', $key);
-        $this->_queue[] = [$args, time(), $cb];
-        $this->process();
+
+        return $this->__call('SORT', $args);
     }
 
     /**
      * mSet
      *
      * @param array $array
-     * @param null $cb
+     * @return bool
      */
-    public function mSet(array $array, $cb = null)
+    public function mSet(array $array)
     {
-        $this->mapCb('MSET', $array, $cb);
+        return $this->mapCb('MSET', $array);
     }
 
     /**
      * mSetNx
      *
      * @param array $array
-     * @param null $cb
+     * @return int
      */
-    public function mSetNx(array $array, $cb = null)
+    public function mSetNx(array $array)
     {
-        $this->mapCb('MSETNX', $array, $cb);
+        return $this->mapCb('MSETNX', $array);
     }
 
     /**
      * mapCb
      *
-     * @param $command
+     * @param string $command
      * @param array $array
-     * @param $cb
+     * @return mixed
      */
-    protected function mapCb($command, array $array, $cb)
+    protected function mapCb($command, array $array)
     {
         $args = [$command];
         foreach ($array as $key => $value) {
             $args[] = $key;
             $args[] = $value;
         }
-        $this->_queue[] = [$args, time(), $cb];
-        $this->process();
+        return $this->__call($command, $args);
     }
 
     /**
      * hMSet
      *
-     * @param $key
+     * @param string $key
      * @param array $array
-     * @param null $cb
+     * @return bool
      */
-    public function hMSet($key, array $array, $cb = null)
+    public function hMSet($key, array $array)
     {
-        $this->keyMapCb('HMSET', $key, $array, $cb);
+        $args = [$key];
+
+        foreach ($array as $k => $v) {
+            array_push($args, $k, $v);
+        }
+
+        return $this->__call('HMSET', $args);
     }
 
     /**
      * hMGet
      *
      * @param $key
-     * @param array $array
-     * @param null $cb
+     * @param array $fields
+     * @return array
      */
-    public function hMGet($key, array $array, $cb = null)
+    public function hMGet($key, array $fields)
     {
-        $format = function ($result) use ($array) {
-            if (!is_array($result)) {
-                return $result;
-            }
-            return \array_combine($array, $result);
-        };
-        $this->_queue[] = [['HMGET', $key, $array], time(), $cb, $format];
-        $this->process();
+        $result = $this->__call('HMGET', array_merge($key, $fields));
+        if (!is_array($result)) {
+            return $result;
+        }
+        return array_combine($fields, $result);
     }
 
     /**
@@ -740,44 +658,22 @@ class Client
      * @param $key
      * @param null $cb
      */
-    public function hGetAll($key, $cb = null)
+    public function hGetAll($key)
     {
-        $format = function ($result) {
-            if (!\is_array($result)) {
-                return $result;
-            }
-            $return = [];
-            $key = '';
-            foreach ($result as $index => $item) {
-                if ($index % 2 == 0) {
-                    $key = $item;
-                    continue;
-                }
-                $return[$key] = $item;
-            }
-            return $return;
-        };
-        $this->_queue[] = [['HGETALL', $key], time(), $cb, $format];
-        $this->process();
-    }
+        $result = $this->__call('HGETALL', [$key]);
 
-    /**
-     * keyMapCb
-     *
-     * @param $command
-     * @param $key
-     * @param array $array
-     * @param $cb
-     */
-    protected function keyMapCb($command, $key, array $array, $cb)
-    {
-        $args = [$command, $key];
-        foreach ($array as $key => $value) {
-            $args[] = $key;
-            $args[] = $value;
+        if (!is_array($result)) {
+            return $result;
         }
-        $this->_queue[] = [$args, time(), $cb];
-        $this->process();
+
+        $data = [];
+
+        foreach (array_chunk($result, 2) as $row) {
+            list($k, $v) = $row;
+            $data[$k] = $v;
+        }
+
+        return $data;
     }
 
     /**
@@ -785,17 +681,26 @@ class Client
      *
      * @param $method
      * @param $args
+     * @return mixed
      */
     public function __call($method, $args)
     {
-        $cb = null;
-        if (\is_callable(end($args))) {
-            $cb = array_pop($args);
-        }
-
         \array_unshift($args, \strtoupper($method));
+
+        $defer = new DeferredFuture;
+
+        $cb = function($result) use ($defer) {
+            if ($result !== false) {
+                $defer->complete($result);
+            } else {
+                $defer->error(new Exception($this->error()));
+            }
+        };
+
         $this->_queue[] = [$args, time(), $cb];
         $this->process();
+
+        return $defer->getFuture()->await();
     }
 
     /**
@@ -824,7 +729,7 @@ class Client
      *
      * @return string
      */
-    function error()
+    public function error()
     {
         return $this->_error;
     }
