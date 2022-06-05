@@ -176,69 +176,52 @@ use Workerman\Timer;
  * @method mixed evalSha($sha, $args = [], $numKeys = 0)
  * @method mixed script($command, ...$scripts)
  * @method mixed client(...$args)
- * @method null|string getLastError()
- * @method bool clearLastError()
- * @method mixed _prefix($value)
- * @method mixed _serialize($value)
- * @method mixed _unserialize($value)
- * Introspection methods
- * @method bool isConnected()
- * @method mixed getHost()
- * @method mixed getPort()
- * @method false|int getDbNum()
- * @method false|double getTimeout()
- * @method mixed getReadTimeout()
- * @method mixed getPersistentID()
- * @method mixed getAuth()
+ * @method string getLastError()
  */
 class Client
 {
-    /**
-     * @var AsyncTcpConnection
-     */
-    protected $_connection = null;
 
-    protected $connected = false;
+    private AsyncTcpConnection $connection;
+
+    private int $status = 0;
+
+    private const STATUS_CLOSED = 0;
+    private const STATUS_CONNECTING = 1;
+    private const STATUS_CONNECTED = 2;
+
+    private ?DeferredFuture $connectDeferred;
 
     /**
      * @var array
      */
-    protected $_options = [];
+    private $options = [];
 
-    /**
-     * @var SplQueue
-     */
-    protected $_queue;
+    private SplQueue $queue;
 
     /**
      * @var int
      */
-    protected $_db = 0;
+    private $db = 0;
 
     /**
      * @var string|array
      */
-    protected $_auth = null;
-
-    /**
-     * @var bool
-     */
-    protected $_waiting = true;
+    private $password = null;
 
     /**
      * @var string
      */
-    protected $_error = '';
+    private $lastError = '';
 
     /**
      * @var array
      */
-    protected $subscribes = [];
+    private $subscribes = [];
 
     /**
      * @var DeferredFuture
      */
-    private $connectDefer;
+    private $pending;
 
     /**
      * Client constructor.
@@ -252,13 +235,11 @@ class Client
             \class_alias('Workerman\Redis\Protocols\Redis', 'Protocols\Redis');
         }
 
-        $this->_options = $options;
+        $this->options = $options;
+        $this->connection = new AsyncTcpConnection($address, $this->options['context'] ?? []);
 
-        $context = isset($this->_options['context']) ? $this->_options['context'] : [];
-        $this->_connection = new AsyncTcpConnection($address, $context);
-
-        $this->_queue = new SplQueue;
-        $this->_queue->setIteratorMode(SplQueue::IT_MODE_DELETE);
+        $this->queue = new SplQueue;
+        $this->queue->setIteratorMode(SplQueue::IT_MODE_DELETE);
 
         //命令调用超时探测
         /*
@@ -305,108 +286,97 @@ class Client
 
     /**
      * connect
+     *
+     * @return void
      */
     public function connect()
     {
-        if ($this->connected) {
+        if ($this->isConnected()) {
             return;
         }
 
-        $timeout = $this->_options['connect_timeout'] ?? 5;
-        $reconnect = $this->_options['auto_reconnect'] ?? false;
+        $timeout = $this->options['connect_timeout'] ?? 5;
+        $reconnect = $this->options['auto_reconnect'] ?? false;
 
         //连接超时设置
         $connectTimer = Timer::add($timeout, function() {
-            $this->_connection->destroy();
-            if ($this->connectDefer) {
-                $this->connectDefer->error(new Exception('Connect to redis timeout.'));
-                $this->connectDefer = null;
-            }
+            $this->connection->destroy();
+            $this->connectDeferred?->error(new Exception('Connect to redis timeout.'));
+            $this->connectDeferred = null;
         }, [], false);
 
-        $this->_connection->onConnect = function () use (&$connectTimer, $reconnect) {
+        $this->connection->onConnect = function () use (&$connectTimer, $reconnect) {
             if ($connectTimer) {
                 Timer::del($connectTimer);
                 $connectTimer = null;
             }
 
-            $this->connected = true;
-
-            //old
-            $this->_waiting = false;
-
             try {
-                if ($this->_db) {
-                    $this->select($this->_db);
+                if ($this->db) {
+                    $this->sendRaw('SELECT', $this->db);
                 }
 
-                if ($this->_auth) {
-                    $this->auth($this->_auth);
+                if ($this->password) {
+                    $this->sendRaw('AUTH', $this->password);
                 }
+
+                $this->lastError = '';
+                $this->status = self::STATUS_CONNECTED;
+                $this->connectDeferred->complete();
+                $this->connectDeferred = null;
+
+                $this->process();
+
             } catch (Exception $e) {
-                if ($this->connectDefer) {
-                    $this->connectDefer->error($e);
-                    $this->connectDefer = null;
-                } else {
-                    throw $e;
-                }
-                return;
+                $this->connectDeferred->error($e);
+                $this->connectDeferred = null;
             }
-
-            if ($this->connectDefer) {
-                $this->connectDefer->complete();
-                $this->connectDefer = null;
-            }
-
-            $this->process();
         };
 
-        $this->_connection->onError = function ($connection, $code, $message) use (&$connectTimer) {
+        $this->connection->onError = function ($connection, $code, $message) use (&$connectTimer, $reconnect) {
             if ($connectTimer) {
                 Timer::del($connectTimer);
                 $connectTimer = null;
             }
 
             $msg = "[$code] $message";
-            $this->_error = $msg;
-            $exception = new Exception($msg);
-
-            if ($this->connectDefer) {
-                $this->connectDefer->error($exception);
-                $this->connectDefer = null;
-            } else {
-                throw $exception;
-            }
+            $this->lastError = $msg;
         };
 
-        $this->_connection->onClose = function () use (&$connectTimer, $reconnect) {
+        $this->connection->onClose = function () use (&$connectTimer, $reconnect) {
             if ($connectTimer) {
                 Timer::del($connectTimer);
                 $connectTimer = null;
             }
 
-            $this->connected = false;
-
             if ($reconnect) {
                 //自动重连时等待并尝试重连
-                $reconnectDelay = $this->_options['reconnect_delay'] ?? 2;
-                echo "Reconnect after {$reconnectDelay} seconds.\n";
+                $reconnectDelay = $this->options['reconnect_delay'] ?? 2;
+                echo "Reconnect after {$reconnectDelay} seconds cause: {$this->lastError}.\n";
+                $this->status = self::STATUS_CONNECTING;
                 Timer::add($reconnectDelay, fn() => EventLoop::queue($this->connect(...)), [], false);
-            } elseif ($this->pending) {
-                //不自动重连时，断开连接之前的动作抛出异常
-                $this->pending->error(new Exception('Disconnected.'));
-                $this->pending = $this->connectDefer = null;
+            } else {
+                $error = new Exception($this->lastError ?: 'Disconnected.');
+                $this->status = self::STATUS_CLOSED;
+
+                //不自动重连时，所有队列都报连接关闭错误
+                while (!$this->queue->isEmpty()) {
+                    [,, $defered] = $this->queue->dequeue();
+                    $defered->error($error);
+                }
+
+                $this->connectDeferred?->error($error);
+                $this->connectDeferred = null;
             }
         };
 
-        $this->_connection->onMessage = function ($connection, $data) {
-            $this->_error = '';
-            $this->_waiting = false;
-
+        $this->connection->onMessage = function ($connection, $data) {
             [$type, $result] = $data;
 
             //!号代表协议解析错误
             if ($type !== '-' && $type !== '!') {
+                $this->lastError = '';
+
                 if ($type === '+' && $result === 'OK') {
                     $result = true;
                 } elseif (is_array($result) && ($result[0] == 'message' || $result[0] == 'pmessage')) {
@@ -420,17 +390,22 @@ class Client
                     return;
                 }
             } else {
-                $this->_error = $result;
+                $this->lastError = $result;
                 $result = false;
             }
 
-            [,, $cb] = $this->_queue->dequeue();
+            if ($this->status == self::STATUS_CONNECTED) {
+                [,, $deferred] = $this->queue->dequeue();
+                $this->pending = $deferred;
+            }
 
-            if ($cb) {
-                $cb($result);
-            } else {
-                $this->process();
-                return;
+            if ($this->pending) {
+                if ($result !== false) {
+                    $this->pending->complete($result);
+                } else {
+                    $this->pending->error(new Exception($this->lastError));
+                }
+                $this->pending = null;
             }
 
             if ($type === '!') {
@@ -441,47 +416,45 @@ class Client
             }
         };
 
-        $defer = $this->connectDefer ?? new DeferredFuture();
-        $this->_connection->connect();
-        $this->connectDefer = $defer;
+        $this->connectDeferred ??= new DeferredFuture();
+        $this->status = self::STATUS_CONNECTING;
 
-        return $defer->getFuture()->await();
+        EventLoop::defer($this->connection->connect(...));
+
+        $this->connectDeferred->getFuture()->await();
+    }
+
+    public function isConnected()
+    {
+        return $this->status == self::STATUS_CONNECTED;
     }
 
     /**
      * process
      */
-    public function process()
+    protected function process()
     {
-        if (!$this->connected || $this->_waiting || $this->_queue->isEmpty()) {
+        if (!$this->isConnected() || $this->pending || $this->queue->isEmpty()) {
             return;
         }
-        $queue = $this->_queue->bottom();
-        $this->_waiting = true;
-        $this->_connection->send($queue[0]);
-        $this->_error = '';
+
+        [$cmd, , $deferd] = $this->queue->bottom();
+        $this->connection->send($cmd);
+        $this->pending = $deferd;
     }
 
     public function select($db)
     {
-        try {
-            $result = $this->__call('SELECT', [$db]);
-            $this->_db = $db;
-            return $result;
-        } catch (\Throwable $e) {
-            throw $e;
-        }
+        $result = $this->__call('SELECT', [$db]);
+        $this->db = $db;
+        return $result;
     }
 
     public function auth($password)
     {
-        try {
-            $result = $this->__call('AUTH', [$password]);
-            $this->_auth = $password;
-            return $result;
-        } catch (\Throwable $e) {
-            throw $e;
-        }
+        $result = $this->__call('AUTH', [$password]);
+        $this->password = $password;
+        return $result;
     }
 
     /**
@@ -492,28 +465,20 @@ class Client
      */
     public function subscribe($callback , ...$channels)
     {
-        try {
-            $result = $this->__call('SUBSCRIBE', $channels);
-            foreach ($channels as $ch) {
-                $this->subscribes[$ch] = $callback;
-            }
-            return $result;
-        } catch (\Exception $e) {
-            throw $e;
+        $result = $this->__call('SUBSCRIBE', $channels);
+        foreach ($channels as $ch) {
+            $this->subscribes[$ch] = $callback;
         }
+        return $result;
     }
 
     public function unsubscribe(...$channels)
     {
-        try {
-            $result = $this->__call('UNSUBSCRIBE', $channels);
-            foreach ($channels as $ch) {
-                unset($this->subscribes[$ch]);
-            }
-            return $result;
-        } catch (\Exception $e) {
-            throw $e;
+        $result = $this->__call('UNSUBSCRIBE', $channels);
+        foreach ($channels as $ch) {
+            unset($this->subscribes[$ch]);
         }
+        return $result;
     }
 
     /**
@@ -524,28 +489,20 @@ class Client
      */
     public function pSubscribe($callback, ...$patterns)
     {
-        try {
-            $result = $this->__call('PSUBSCRIBE', $patterns);
-            foreach ($patterns as $ch) {
-                $this->subscribes[$ch] = $callback;
-            }
-            return $result;
-        } catch (\Exception $e) {
-            throw $e;
+        $result = $this->__call('PSUBSCRIBE', $patterns);
+        foreach ($patterns as $ch) {
+            $this->subscribes[$ch] = $callback;
         }
+        return $result;
     }
 
     public function pUnsubscribe($patterns)
     {
-        try {
-            $result = $this->__call('PUNSUBSCRIBE', $patterns);
-            foreach ($patterns as $ch) {
-                unset($this->subscribes[$ch]);
-            }
-            return $result;
-        } catch (\Exception $e) {
-            throw $e;
+        $result = $this->__call('PUNSUBSCRIBE', $patterns);
+        foreach ($patterns as $ch) {
+            unset($this->subscribes[$ch]);
         }
+        return $result;
     }
 
     /**
@@ -694,7 +651,7 @@ class Client
     }
 
     /**
-     * __call
+     * 添加命令到队列
      *
      * @param $method
      * @param $args
@@ -702,45 +659,35 @@ class Client
      */
     public function __call($method, $args)
     {
+        if ($this->status == self::STATUS_CLOSED) {
+            throw new Exception($this->lastError ?: 'Lost connection.');
+        }
+
         \array_unshift($args, \strtoupper($method));
 
-        $defer = new DeferredFuture;
-
-        $cb = function($result) use ($defer) {
-            if ($result !== false) {
-                $defer->complete($result);
-            } else {
-                $defer->error(new Exception($this->error()));
-            }
-        };
-
-        $this->_queue->enqueue([$args, time(), $cb]);
+        $deferd = new DeferredFuture;
+        $this->queue->enqueue([$args, time(), $deferd]);
         $this->process();
 
-        return $defer->getFuture()->await();
+        return $deferd->getFuture()->await();
     }
 
     /**
-     * closeConnection
+     * 不走队列机制直接发送
+     *
+     * 用于在建立重连时绕过队列机制优先发送 select 和 auth 命令，
+     * 因重连时客户端仍然可能在接受正常的命令（会进入队列），此时如果重连仍然使用队列机制
+     * 将因序顺序等原因很难处理，所以此方法可以直接绕过，但注意的是此方法并不能并发。
+     *
+     * @param string $cmd
+     * @param string[] $args
+     * @return mixed
      */
-    public function closeConnection()
+    private function sendRaw($cmd, ...$args)
     {
-        if (!$this->_connection) {
-            return;
-        }
-
-        $this->_subscribe = false;
-        $this->_connection->onConnect = $this->_connection->onError = $this->_connection->onClose =
-        $this->_connection->onMessge = null;
-        $this->_connection->close();
-
-        if ($this->_connectTimeoutTimer) {
-            Timer::del($this->_connectTimeoutTimer);
-        }
-
-        if ($this->_reconnectTimer) {
-            Timer::del($this->_reconnectTimer);
-        }
+        $this->pending = new DeferredFuture();
+        $this->connection->send([$cmd, $args]);
+        return $this->pending->getFuture()->await();
     }
 
     /**
@@ -748,9 +695,9 @@ class Client
      *
      * @return string
      */
-    public function error()
+    public function getLastError()
     {
-        return $this->_error;
+        return $this->lastError;
     }
 
     /**
@@ -758,28 +705,20 @@ class Client
      */
     public function close()
     {
-        if (!$this->_connection) {
+        if (!$this->connection) {
             return;
         }
 
         $this->subscribes = [];
-        $this->_connection->onConnect = $this->_connection->onError = $this->_connection->onClose =
-        $this->_connection->onMessge = null;
-        $this->_connection->close();
-
-        if ($this->_connectTimeoutTimer) {
-            Timer::del($this->_connectTimeoutTimer);
-        }
-
-        if ($this->_reconnectTimer) {
-            Timer::del($this->_reconnectTimer);
-        }
+        $this->connection->onConnect = $this->connection->onError = $this->connection->onClose =
+        $this->connection->onMessge = null;
+        $this->connection->close();
     }
 
     public function __destruct()
     {
         $this->close();
-        $this->_queue = null;
+        $this->queue = null;
     }
 
     /**
