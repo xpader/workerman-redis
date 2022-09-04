@@ -197,6 +197,7 @@ class Client
     private $options = [];
 
     private SplQueue $queue;
+    private bool $queuePaused = true;
 
     /**
      * @var int
@@ -219,7 +220,7 @@ class Client
     private $subscribes = [];
 
     /**
-     * @var DeferredFuture
+     * @var Command
      */
     private $pending;
 
@@ -313,11 +314,11 @@ class Client
 
             try {
                 if ($this->db) {
-                    $this->sendRaw('SELECT', $this->db);
+                    $this->select($this->db);
                 }
 
                 if ($this->password) {
-                    $this->sendRaw('AUTH', $this->password);
+                    $this->auth($this->password);
                 }
 
                 $this->lastError = '';
@@ -325,10 +326,11 @@ class Client
                 $this->connectDeferred->complete();
                 $this->connectDeferred = null;
 
+                $this->queuePaused = false;
                 $this->process();
 
             } catch (Exception $e) {
-                $this->connectDeferred->error($e);
+                $this->connectDeferred?->error($e);
                 $this->connectDeferred = null;
             }
         };
@@ -349,7 +351,15 @@ class Client
                 $connectTimer = null;
             }
 
+            $this->queuePaused = true;
+
             if ($reconnect) {
+                //将当前队列的内容先重新放进队列
+                if ($this->pending) {
+                    $this->queue->enqueue($this->pending);
+                    $this->pending = null;
+                }
+
                 //自动重连时等待并尝试重连
                 $reconnectDelay = $this->options['reconnect_delay'] ?? 2;
                 echo "Reconnect after {$reconnectDelay} seconds cause: {$this->lastError}.\n";
@@ -360,9 +370,14 @@ class Client
                 $this->status = self::STATUS_CLOSED;
 
                 //不自动重连时，所有队列都报连接关闭错误
+                if ($this->pending) {
+                    $this->pending->error($error);
+                    $this->pending = null;
+                }
+
                 while (!$this->queue->isEmpty()) {
-                    [,, $defered] = $this->queue->dequeue();
-                    $defered->error($error);
+                    $pending = $this->queue->dequeue();
+                    $pending->error($error);
                 }
 
                 $this->connectDeferred?->error($error);
@@ -392,11 +407,6 @@ class Client
             } else {
                 $this->lastError = $result;
                 $result = false;
-            }
-
-            if ($this->status == self::STATUS_CONNECTED) {
-                [,, $deferred] = $this->queue->dequeue();
-                $this->pending = $deferred;
             }
 
             if ($this->pending) {
@@ -438,9 +448,10 @@ class Client
             return;
         }
 
-        [$cmd, , $deferd] = $this->queue->bottom();
-        $this->connection->send($cmd);
-        $this->pending = $deferd;
+        /** @var Command $cmd */
+        $cmd = $this->queue->dequeue();
+        $this->connection->send($cmd->buffer());
+        $this->pending = $cmd;
     }
 
     public function select($db)
@@ -651,6 +662,22 @@ class Client
     }
 
     /**
+     * 事务
+     */
+    public function transaction(callable $inTransactionCallback)
+    {
+        $this->multi();
+        $this->queuePaused = true;
+        try {
+            $inTransactionCallback($this);
+            $this->exec();
+        } catch (\Throwable $e) {
+            $this->discard();
+        }
+        $this->queuePaused = false;
+    }
+
+    /**
      * 添加命令到队列
      *
      * @param $method
@@ -663,31 +690,18 @@ class Client
             throw new Exception($this->lastError ?: 'Lost connection.');
         }
 
-        \array_unshift($args, \strtoupper($method));
+        $cmd = new Command($method, $args);
 
-        $deferd = new DeferredFuture;
-        $this->queue->enqueue([$args, time(), $deferd]);
-        $this->process();
+        //当处于普通命令时，命令全部都队列机制，当系统连接、处理事务中时，则整个连接是原子性的，此时不走命令机制，且队列被暂停
+        if (!$this->queuePaused) {
+            $this->queue->enqueue($cmd);
+            $this->process();
+        } else {
+            $this->connection->send([$method, ...$args]);
+            $this->pending = $cmd;
+        }
 
-        return $deferd->getFuture()->await();
-    }
-
-    /**
-     * 不走队列机制直接发送
-     *
-     * 用于在建立重连时绕过队列机制优先发送 select 和 auth 命令，
-     * 因重连时客户端仍然可能在接受正常的命令（会进入队列），此时如果重连仍然使用队列机制
-     * 将因序顺序等原因很难处理，所以此方法可以直接绕过，但注意的是此方法并不能并发。
-     *
-     * @param string $cmd
-     * @param string[] $args
-     * @return mixed
-     */
-    private function sendRaw($cmd, ...$args)
-    {
-        $this->pending = new DeferredFuture();
-        $this->connection->send([$cmd, $args]);
-        return $this->pending->getFuture()->await();
+        return $cmd->await();
     }
 
     /**
@@ -718,7 +732,6 @@ class Client
     public function __destruct()
     {
         $this->close();
-        $this->queue = null;
     }
 
     /**
